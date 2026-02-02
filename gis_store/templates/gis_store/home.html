@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebGIS - Circle K & GS25 của Bé Thuận</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <style>
+    :root{
+      --red:#e31c23; --red2:#c3141a; --yellow:#ffd100;
+      --bg:#f6f7fb; --card:#fff; --border:#e5e7eb;
+      --ink:#111827; --muted:#6b7280;
+      --shadow:0 10px 26px rgba(0,0,0,.10);
+      --container:1200px;
+      --r:16px;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--ink)}
+    a{text-decoration:none;color:inherit}
+    .wrap{max-width:var(--container);margin:0 auto;padding:0 14px}
+
+    /* top mini nav (giống CircleK có dòng menu nhỏ) */
+    .top-mini{
+      background:#fff;
+      border-bottom:1px solid var(--border);
+      font-size:13px;
+    }
+    .top-mini .wrap{
+      display:flex;justify-content:flex-end;gap:18px;align-items:center;
+      padding:10px 14px;
+      color:#111827;
+    }
+    .top-mini a{color:#111827;opacity:.9}
+    .top-mini a:hover{opacity:1}
+
+    /* header đỏ + menu */
+    .header{
+      background:linear-gradient(180deg,var(--red),var(--red2));
+      color:#fff;
+      box-shadow:var(--shadow);
+      position:sticky; top:0; z-index:10;
+    }
+    .header .wrap{
+      display:flex;align-items:center;gap:16px;
+      padding:12px 14px;
+    }
+    .logo{
+      display:flex;align-items:center;gap:12px;
+      min-width:250px;
+    }
+    .logo-box{
+      width:140px;height:46px;background:#fff;border-radius:10px;
+      display:flex;align-items:center;justify-content:center;
+      font-weight:1000;color:var(--red);letter-spacing:1px;
+    }
+    .menu{
+      display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+      flex:1;
+    }
+    .tab{
+      background:rgba(255,255,255,.12);
+      border:1px solid rgba(255,255,255,.22);
+      color:#fff;
+      padding:12px 14px;
+      border-radius:12px;
+      cursor:pointer;
+      display:inline-flex;gap:10px;align-items:center;
+      font-weight:900;
+      user-select:none;
+    }
+    .tab.active{
+      background:#fff;color:var(--red);
+      border-color:transparent;
+    }
+
+    /* hero giống “TÌM CỬA HÀNG…” */
+    .hero{
+      background:linear-gradient(180deg,#ffb25c,#f58a27);
+      color:#fff;
+      margin:14px 0;
+      border-radius:22px;
+      overflow:hidden;
+      box-shadow:var(--shadow);
+    }
+    .hero .wrap{
+      display:grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap:12px;
+      padding:18px 18px;
+      align-items:center;
+    }
+    .hero h1{margin:0;font-size:38px;letter-spacing:.5px}
+    .hero p{margin:10px 0 0 0;opacity:.95;line-height:1.5}
+    .hero-card{
+      background:rgba(255,255,255,.15);
+      border:1px solid rgba(255,255,255,.22);
+      border-radius:18px;
+      padding:14px;
+    }
+
+    /* search bar */
+    .search{
+      background:#fff;
+      border:1px solid rgba(255,255,255,.0);
+      border-radius:999px;
+      padding:10px 12px;
+      display:flex;gap:10px;align-items:center;
+      box-shadow:0 12px 24px rgba(0,0,0,.18);
+    }
+    .pin{
+      width:34px;height:34px;border-radius:999px;
+      display:grid;place-items:center;
+      background:rgba(255,209,0,.22);
+      border:1px solid rgba(255,209,0,.45);
+    }
+    .search input{
+      width:100%;
+      border:none;outline:none;
+      font-size:14px;
+    }
+    .btn{
+      border:none;cursor:pointer;
+      border-radius:12px;
+      padding:10px 12px;
+      font-weight:1000;
+      display:inline-flex;gap:8px;align-items:center;
+      white-space:nowrap;
+    }
+    .btn-yellow{background:linear-gradient(180deg,var(--yellow),#ffc400);color:#111827}
+    .btn-white{background:#fff;color:#111827;border:1px solid var(--border)}
+    .btn-ghost{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.35)}
+    .btn:active{transform:translateY(1px)}
+
+    /* main layout: list + map */
+    .grid{
+      display:grid;
+      grid-template-columns: 380px 1fr;
+      gap:12px;
+      margin-bottom:18px;
+    }
+    @media(max-width:980px){
+      .header .wrap{flex-direction:column;align-items:stretch}
+      .hero .wrap{grid-template-columns:1fr}
+      .grid{grid-template-columns:1fr}
+    }
+
+    .panel{
+      background:#fff;border:1px solid var(--border);
+      border-radius:18px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+    .panel-head{
+      padding:12px 14px;
+      border-bottom:1px solid var(--border);
+      display:flex;justify-content:space-between;align-items:center;
+      background:linear-gradient(180deg,#fff,#fff8f8);
+    }
+    .panel-head b{font-size:13px}
+    .panel-body{padding:12px 14px}
+
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+    .field{
+      flex:1;min-width:160px;
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:10px 12px;
+      background:#fff;
+    }
+    label{display:block;font-size:12px;color:var(--muted);font-weight:900;margin-bottom:6px}
+    select,input{
+      width:100%;
+      border:none;outline:none;background:transparent;
+      font-size:13px;font-weight:800;
+    }
+
+    /* list */
+    .list{
+      display:flex;flex-direction:column;gap:8px;
+      max-height:60vh; overflow:auto; padding-right:4px;
+    }
+    .item{
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:10px 12px;
+      cursor:pointer;
+      background:#fff;
+      transition:transform .08s ease, box-shadow .12s ease;
+    }
+    .item:hover{box-shadow:0 8px 18px rgba(0,0,0,.10);transform:translateY(-1px)}
+    .item b{display:block;font-size:13px}
+    .item small{display:block;color:var(--muted);margin-top:4px;line-height:1.35}
+
+    /* map */
+    #map{height:68vh; min-height:460px;}
+    .status{
+      font-size:12px;color:var(--muted);font-weight:900;
+      display:flex;gap:8px;align-items:center;
+    }
+    .dot{width:9px;height:9px;border-radius:999px;background:#16a34a}
+    .dot.bad{background:#ef4444}
+
+    details.console{
+      border-top:1px solid var(--border);
+      background:#0b1220;color:#e5e7eb;
+    }
+    details.console summary{
+      list-style:none; cursor:pointer;
+      padding:10px 14px;
+      font-weight:1000;
+      display:flex;justify-content:space-between;align-items:center;
+      background:rgba(255,255,255,.06);
+      user-select:none;
+    }
+    details.console summary::-webkit-details-marker{display:none}
+    .consoleBody{
+      padding:12px 14px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New";
+      font-size:12px;
+      white-space:pre-wrap;
+      max-height:220px; overflow:auto;
+      border-top:1px solid rgba(255,255,255,.10);
+    }
+
+    /* sections show/hide */
+    .section{display:none}
+    .section.active{display:block}
+  </style>
+</head>
+
+<body>
+
+<!-- mini menu -->
+<div class="top-mini">
+  <div class="wrap">
+    <a href="#">Giới thiệu</a>
+    <a href="#">Tin tức & Sự kiện</a>
+    <a href="#">Liên hệ</a>
+    <a href="/admin/">Admin</a>
+  </div>
+</div>
+
+<!-- header -->
+<div class="header">
+  <div class="wrap">
+    <div class="logo">
+      <div class="logo-box">CIRCLE K của Bé Thuận</div>
+    </div>
+
+    <div class="menu">
+      <div class="tab active" data-tab="system">🏪 Hệ Thống Circle K của Bé Thuận</div>
+      <div class="tab" data-tab="gs25">🏪 Hệ Thống GS25 của Bé Thuận</div>
+      <div class="tab" data-tab="promo">🎁 Ưu Đãi (demo)</div>
+      <div class="tab" data-tab="food">🍔 Thức Ăn & Thức Uống (demo)</div>
+    </div>
+
+    <a class="btn btn-ghost" href="/stores/">Stores</a>
+  </div>
+</div>
+
+<!-- hero -->
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <h1>TÌM CỬA HÀNG GẦN NHẤT</h1>
+      <p>Nhập địa chỉ hoặc tọa độ. Chọn brand để xem danh sách và click từng điểm để mở map.</p>
+    </div>
+
+    <div class="hero-card">
+      <div class="search">
+        <div class="pin">📍</div>
+        <input id="q" placeholder="VD: Nguyễn Trãi, Q5, TP.HCM hoặc 10.76,106.66" />
+        <button class="btn btn-yellow" id="btnSmart">Tìm</button>
+        <button class="btn btn-white" id="btnMyLoc">Vị trí tôi</button>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-white" id="btnCopy">Copy JSON</button>
+        <button class="btn btn-white" id="btnClear">Clear</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- ========== SECTION: Circle K system ========== -->
+  <div class="section active" id="sec-system">
+    <div class="grid">
+      <!-- left list -->
+      <div class="panel">
+        <div class="panel-head">
+          <b>Danh sách Circle K</b>
+          <div class="status"><span class="dot" id="dot"></span><span id="status">Sẵn sàng.</span></div>
+        </div>
+
+        <div class="panel-body">
+          <div class="row">
+            <div class="field">
+              <label>Tìm trong danh sách</label>
+              <input id="filterText" placeholder="Gõ tên / địa chỉ..." />
+            </div>
+            <div class="field" style="max-width:180px">
+              <label>Max_km</label>
+              <select id="maxKm">
+                <option value="0.2" selected>0.2 km</option>
+                <option value="0.5">0.5 km</option>
+                <option value="1">1 km</option>
+                <option value="2">2 km</option>
+                <option value="5">5 km</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-yellow" id="btnLoadCK">Tải danh sách Circle K</button>
+            <button class="btn btn-white" id="btnLoadNear">Sắp xếp theo gần nhất</button>
+          </div>
+
+          <div style="margin-top:12px" class="list" id="storeList">
+            <!-- items injected -->
+          </div>
+
+          <details class="console" style="margin-top:12px" open>
+            <summary><span>JSON Result</span><span style="opacity:.85">thu gọn</span></summary>
+            <div class="consoleBody" id="result">{ "result": "Kết quả JSON sẽ hiện ở đây..." }</div>
+          </details>
+        </div>
+      </div>
+
+      <!-- right map -->
+      <div class="panel">
+        <div class="panel-head">
+          <b>Bản đồ</b>
+          <div class="status">Click store để bay tới điểm • Click map để lấy tọa độ</div>
+        </div>
+        <div id="map"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== SECTION: GS25 ========== -->
+  <div class="section" id="sec-gs25">
+    <div class="panel" style="padding:14px">
+      <b>GS25</b>
+      <div style="color:var(--muted);margin-top:6px">
+        Bấm tab “Hệ Thống GS25” → mình dùng chung map & list, chỉ đổi brand = GS25.
+      </div>
+      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-yellow" id="btnLoadGS25">Tải danh sách GS25</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- demo sections -->
+  <div class="section" id="sec-promo"><div class="panel" style="padding:14px"><b>Ưu đãi</b><div style="color:var(--muted);margin-top:6px">Demo UI.</div></div></div>
+  <div class="section" id="sec-food"><div class="panel" style="padding:14px"><b>Thức ăn & thức uống</b><div style="color:var(--muted);margin-top:6px">Demo UI.</div></div></div>
+</div>
+
+<script>
+  // ===== DOM =====
+  const out = document.getElementById('result');
+  const statusEl = document.getElementById('status');
+  const dot = document.getElementById('dot');
+
+  const qInput = document.getElementById('q');
+  const maxKmSel = document.getElementById('maxKm');
+  const filterText = document.getElementById('filterText');
+
+  const storeListEl = document.getElementById('storeList');
+
+  // ===== state =====
+  let STORES = [];        // all from API
+  let STORES_VIEW = [];   // filtered/sorted view
+  let currentCenter = null; // {lat, lon}
+
+  // ===== helpers =====
+  function setStatus(text, ok=true){
+    statusEl.textContent = text || '';
+    dot.className = ok ? "dot" : "dot bad";
+    statusEl.style.color = ok ? '#16a34a' : '#ef4444';
+  }
+  function showJSON(obj){ out.textContent = JSON.stringify(obj, null, 2); }
+  function esc(s){
+    return (s??"").toString().replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  }
+  function haversineKm(lat1, lon1, lat2, lon2){
+    const R = 6371.0;
+    const toRad = (x)=> x*Math.PI/180;
+    const dlat = toRad(lat2-lat1);
+    const dlon = toRad(lon2-lon1);
+    const a = Math.sin(dlat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dlon/2)**2;
+    return 2*R*Math.asin(Math.sqrt(a));
+  }
+
+  async function fetchJSON(url){
+    setStatus("Đang gọi API...");
+    try{
+      const res = await fetch(url);
+      const data = await res.json();
+      showJSON(data);
+      if(!res.ok){ setStatus(data.error || "Có lỗi", false); }
+      else{ setStatus(data.message || "OK ✅", true); }
+      return {res, data};
+    }catch(e){
+      showJSON({error:String(e)});
+      setStatus("Lỗi mạng/Fetch ❌", false);
+      return {res:null, data:null};
+    }
+  }
+
+  // ===== map =====
+  const map = L.map("map").setView([10.7769, 106.7009], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom:19,
+    attribution:"&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  const userIcon = L.divIcon({
+    className:"",
+    html:`<div style="width:16px;height:16px;border-radius:999px;background:#2563eb;border:3px solid #fff;box-shadow:0 10px 20px rgba(37,99,235,.35)"></div>`,
+    iconSize:[16,16], iconAnchor:[8,8]
+  });
+  const storeIcon = L.divIcon({
+    className:"",
+    html:`<div style="width:18px;height:18px;border-radius:6px;background:linear-gradient(180deg,#e31c23,#c3141a);border:2px solid #fff;box-shadow:0 12px 22px rgba(227,28,35,.35)"></div>`,
+    iconSize:[18,18], iconAnchor:[9,9]
+  });
+
+  let userMarker = null;
+  let storeMarkers = []; // for list display
+
+  function clearMarkers(){
+    if(userMarker){ userMarker.remove(); userMarker = null; }
+    storeMarkers.forEach(m => m.remove());
+    storeMarkers = [];
+  }
+
+  function setUser(lat, lon, displayAddr=""){
+    currentCenter = {lat, lon};
+    if(userMarker) userMarker.remove();
+    userMarker = L.marker([lat, lon], {icon:userIcon}).addTo(map);
+    userMarker.bindPopup(`<b>Vị trí</b><br/>${esc(displayAddr || (lat.toFixed(6)+", "+lon.toFixed(6)))}`).openPopup();
+    map.setView([lat, lon], 16);
+  }
+
+  function focusStore(s){
+    map.setView([s.lat, s.lon], 18);
+    const popup = `<b>${esc(s.name||"Cửa hàng")}</b><br/>${esc(s.address_db||"")}`;
+    const m = L.marker([s.lat, s.lon], {icon:storeIcon}).addTo(map).bindPopup(popup).openPopup();
+    storeMarkers.push(m);
+  }
+
+  // click map => set center (và có thể sort gần nhất)
+  map.on("click", (e)=>{
+    setUser(e.latlng.lat, e.latlng.lng, "Chọn từ bản đồ");
+  });
+
+  // ===== render list =====
+  function renderList(arr){
+    storeListEl.innerHTML = "";
+    if(!arr.length){
+      storeListEl.innerHTML = `<div style="color:#6b7280;font-weight:800">Không có dữ liệu. Bấm “Tải danh sách”.</div>`;
+      return;
+    }
+    arr.forEach((s)=>{
+      const div = document.createElement("div");
+      div.className = "item";
+      const d = (currentCenter)
+        ? haversineKm(currentCenter.lat, currentCenter.lon, s.lat, s.lon).toFixed(2) + " km"
+        : "";
+      div.innerHTML = `
+        <b>${esc(s.name || "Circle K")}</b>
+        <small>${esc(s.address_db || "")}</small>
+        ${d ? `<small>Khoảng cách: <b>${esc(d)}</b></small>` : ``}
+      `;
+      div.onclick = ()=>{
+        // mỗi lần click store => clear marker store cũ để đỡ rối
+        storeMarkers.forEach(m => m.remove());
+        storeMarkers = [];
+        focusStore(s);
+      };
+      storeListEl.appendChild(div);
+    });
+  }
+
+  function applyFilter(){
+    const t = (filterText.value || "").trim().toLowerCase();
+    STORES_VIEW = STORES.filter(s=>{
+      const hay = ((s.name||"")+" "+(s.address_db||"")).toLowerCase();
+      return !t || hay.includes(t);
+    });
+    renderList(STORES_VIEW);
+  }
+
+  function sortByNearest(){
+    if(!currentCenter){
+      setStatus("Chưa có điểm trung tâm. Hãy Tìm hoặc click bản đồ trước.", false);
+      return;
+    }
+    STORES_VIEW = [...STORES_VIEW].sort((a,b)=>{
+      const da = haversineKm(currentCenter.lat, currentCenter.lon, a.lat, a.lon);
+      const db = haversineKm(currentCenter.lat, currentCenter.lon, b.lat, b.lon);
+      return da - db;
+    });
+    renderList(STORES_VIEW);
+    setStatus("Đã sắp xếp theo gần nhất ✅", true);
+  }
+
+  // ===== load stores =====
+  async function loadBrand(brand){
+    // dùng API bạn đã có
+    const {res, data} = await fetchJSON(`/tools/stores-by-brand/?brand=${encodeURIComponent(brand)}`);
+    if(!res || !res.ok) return;
+
+    STORES = (data.stores || []).map(x=>({
+      id:x.id,
+      name:x.name,
+      brand:x.brand,
+      address_db:x.address_db || "",
+      lat:Number(x.lat),
+      lon:Number(x.lon),
+    }));
+    // rename lon -> lon but we keep lon; focusStore uses s.lon? -> uses s.lon; map uses s.lon
+    // convert to s.lon, but earlier focusStore uses s.lon; we stored lon. We'll normalize:
+    STORES = STORES.map(s=>({ ...s, lon:s.lon, lon_:s.lon })); // keep safe
+
+    // fix property names for map
+    STORES = STORES.map(s=>({ ...s, lon:s.lon, lon:s.lon, lon_ok:s.lon, lon2:s.lon, lonFinal:s.lon })); // no-op
+
+    // Actually simplest: unify to s.lon; already have.
+    // But API returns "lon" field, we stored as lon.
+
+    STORES_VIEW = [...STORES];
+    applyFilter();
+    setStatus(`Đã tải ${STORES.length} cửa hàng (${brand}) ✅`, true);
+  }
+
+  // ===== smart search (để có center) =====
+  async function callSmart(){
+    const q = (qInput.value || "").trim();
+    if(!q){ setStatus("Nhập địa chỉ hoặc lat,lon.", false); return; }
+
+    const maxKm = maxKmSel.value;
+    // mặc định center theo CircleK (tab system), bạn có thể đổi theo tab
+    const brand = document.querySelector('.tab.active')?.dataset?.tab === "gs25" ? "GS25" : "CIRCLEK";
+
+    const {res, data} = await fetchJSON(`/tools/smart-search/?q=${encodeURIComponent(q)}&brand=${encodeURIComponent(brand)}&max_km=${encodeURIComponent(maxKm)}`);
+    if(!res || !res.ok || !data.location) return;
+
+    setUser(Number(data.location.lat), Number(data.location.lon), data.location.display_address || q);
+    // nếu có store nearest -> focus luôn
+    if(data.store){
+      storeMarkers.forEach(m => m.remove());
+      storeMarkers = [];
+      focusStore({lat:Number(data.store.lat), lon:Number(data.store.lon), name:data.store.name, address_db:data.store.address_db || ""});
+    }
+  }
+
+  // ===== tabs switch =====
+  function setActiveTab(name){
+    document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+    document.querySelector(`.tab[data-tab="${name}"]`)?.classList.add("active");
+
+    document.querySelectorAll(".section").forEach(s=>s.classList.remove("active"));
+    const sec = document.getElementById(`sec-${name}`) || document.getElementById("sec-system");
+    sec.classList.add("active");
+
+    // khi chuyển tab, nếu là gs25 thì tự load list gs25 (nếu muốn)
+    if(name === "gs25"){
+      // optional: auto load
+      // loadBrand("GS25");
+    }
+  }
+
+  document.querySelectorAll(".tab").forEach(t=>{
+    t.onclick = ()=> setActiveTab(t.dataset.tab);
+  });
+
+  // ===== buttons =====
+  document.getElementById("btnSmart").onclick = callSmart;
+
+  document.getElementById("btnMyLoc").onclick = ()=>{
+    if(!navigator.geolocation){
+      setStatus("Trình duyệt không hỗ trợ geolocation.", false);
+      return;
+    }
+    setStatus("Đang lấy vị trí...");
+    navigator.geolocation.getCurrentPosition(
+      (pos)=>{
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        qInput.value = `${lat},${lon}`;
+        callSmart();
+      },
+      ()=> setStatus("Không lấy được vị trí. Hãy cấp quyền Location.", false),
+      {enableHighAccuracy:true, timeout:8000}
+    );
+  };
+
+  document.getElementById("btnCopy").onclick = async ()=>{
+    try{ await navigator.clipboard.writeText(out.textContent); setStatus("Đã copy JSON ✅", true); }
+    catch{ setStatus("Không copy được (trình duyệt chặn).", false); }
+  };
+
+  document.getElementById("btnClear").onclick = ()=>{
+    qInput.value = "";
+    filterText.value = "";
+    STORES = []; STORES_VIEW = [];
+    currentCenter = null;
+    clearMarkers();
+    renderList([]);
+    showJSON({result:"Kết quả JSON sẽ hiện ở đây..."});
+    map.setView([10.7769, 106.7009], 12);
+    setStatus("Đã clear.", true);
+  };
+
+  document.getElementById("btnLoadCK").onclick = ()=> loadBrand("CIRCLEK");
+  document.getElementById("btnLoadGS25").onclick = ()=> { setActiveTab("gs25"); loadBrand("GS25"); };
+
+  document.getElementById("btnLoadNear").onclick = ()=>{
+    applyFilter();
+    sortByNearest();
+  };
+
+  filterText.addEventListener("input", ()=>{
+    applyFilter();
+  });
+
+  // ===== initial =====
+  renderList([]);
+  showJSON({result:"Kết quả JSON sẽ hiện ở đây..."});
+  setStatus("Sẵn sàng.", true);
+</script>
+
+</body>
+</html>
