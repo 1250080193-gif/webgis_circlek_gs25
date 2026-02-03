@@ -12,6 +12,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+
         migrations.CreateModel(
             name='ChuoiCuaHang',
             fields=[
@@ -24,6 +25,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Chuỗi cửa hàng',
             },
         ),
+
         migrations.CreateModel(
             name='NhaCungCap',
             fields=[
@@ -36,6 +38,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Nhà cung cấp',
             },
         ),
+
         migrations.CreateModel(
             name='NhomSanPham',
             fields=[
@@ -47,6 +50,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Nhóm sản phẩm',
             },
         ),
+
         migrations.CreateModel(
             name='ThuongHieu',
             fields=[
@@ -58,6 +62,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Thương hiệu',
             },
         ),
+
         migrations.CreateModel(
             name='CuaHang',
             fields=[
@@ -67,57 +72,100 @@ class Migration(migrations.Migration):
                 ('quan_huyen', models.CharField(max_length=50, verbose_name='Quận/Huyện')),
                 ('vi_do', models.FloatField(verbose_name='Vĩ độ (lat)')),
                 ('kinh_do', models.FloatField(verbose_name='Kinh độ (lng)')),
-                ('chuoi', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='gis_store.chuoicuahang', verbose_name='Chuỗi cửa hàng')),
+                ('chuoi', models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    to='gis_store.chuoicuahang',
+                    verbose_name='Chuỗi cửa hàng'
+                )),
             ],
             options={
                 'verbose_name': 'Cửa hàng',
                 'verbose_name_plural': 'Cửa hàng',
             },
         ),
+
         migrations.CreateModel(
             name='NhanVien',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('ho_ten', models.CharField(max_length=120, verbose_name='Họ và tên')),
                 ('chuc_vu', models.CharField(blank=True, max_length=50, verbose_name='Chức vụ')),
-                ('cua_hang', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='gis_store.cuahang', verbose_name='Cửa hàng')),
+                ('cua_hang', models.ForeignKey(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    to='gis_store.cuahang',
+                    verbose_name='Cửa hàng'
+                )),
             ],
             options={
                 'verbose_name': 'Nhân viên',
                 'verbose_name_plural': 'Nhân viên',
             },
         ),
+
         migrations.CreateModel(
             name='SanPham',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('ten', models.CharField(max_length=120, verbose_name='Tên sản phẩm')),
-                ('nha_cung_cap', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='gis_store.nhacungcap', verbose_name='Nhà cung cấp')),
-                ('nhom_san_pham', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='gis_store.nhomsanpham', verbose_name='Nhóm sản phẩm')),
-                ('thuong_hieu', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='gis_store.thuonghieu', verbose_name='Thương hiệu')),
+                ('nha_cung_cap', models.ForeignKey(
+                    blank=True,
+                    null=True,
+                    on_delete=django.db.models.deletion.SET_NULL,
+                    to='gis_store.nhacungcap',
+                    verbose_name='Nhà cung cấp'
+                )),
+                ('nhom_san_pham', models.ForeignKey(
+                    blank=True,
+                    null=True,
+                    on_delete=django.db.models.deletion.SET_NULL,
+                    to='gis_store.nhomsanpham',
+                    verbose_name='Nhóm sản phẩm'
+                )),
+                ('thuong_hieu', models.ForeignKey(
+                    blank=True,
+                    null=True,
+                    on_delete=django.db.models.deletion.SET_NULL,
+                    to='gis_store.thuonghieu',
+                    verbose_name='Thương hiệu'
+                )),
             ],
             options={
                 'verbose_name': 'Sản phẩm',
                 'verbose_name_plural': 'Sản phẩm',
             },
         ),
+
         migrations.AddField(
             model_name='cuahang',
             name='san_pham',
-            field=models.ManyToManyField(blank=True, to='gis_store.sanpham', verbose_name='Sản phẩm'),
+            field=models.ManyToManyField(
+                blank=True,
+                to='gis_store.sanpham',
+                verbose_name='Sản phẩm'
+            ),
         ),
+
         migrations.CreateModel(
             name='KhuyenMai',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('ten', models.CharField(max_length=150, verbose_name='Tên khuyến mãi')),
                 ('mo_ta', models.TextField(blank=True, verbose_name='Mô tả')),
-                ('cua_hang', models.ManyToManyField(blank=True, to='gis_store.cuahang', verbose_name='Áp dụng cho cửa hàng')),
-                ('thuong_hieu', models.ManyToManyField(blank=True, to='gis_store.thuonghieu', verbose_name='Áp dụng cho thương hiệu')),
+                ('cua_hang', models.ManyToManyField(
+                    blank=True,
+                    to='gis_store.cuahang',
+                    verbose_name='Áp dụng cho cửa hàng'
+                )),
+                ('thuong_hieu', models.ManyToManyField(
+                    blank=True,
+                    to='gis_store.thuonghieu',
+                    verbose_name='Áp dụng cho thương hiệu'
+                )),
             ],
             options={
                 'verbose_name': 'Khuyến mãi',
                 'verbose_name_plural': 'Khuyến mãi',
             },
         ),
+
     ]

@@ -62,7 +62,6 @@ class SanPham(models.Model):
         verbose_name="Thương hiệu",
     )
 
-    # ✅ THÊM ẢNH SẢN PHẨM
     hinh_anh = models.ImageField(
         "Hình ảnh sản phẩm",
         upload_to="images/",
@@ -82,7 +81,6 @@ class ChuoiCuaHang(models.Model):
     ten = models.CharField("Tên chuỗi cửa hàng", max_length=100)
     mo_ta = models.TextField("Mô tả", blank=True)
 
-    # ✅ THÊM LOGO
     logo = models.ImageField(
         "Logo chuỗi",
         upload_to="media/logo/",
@@ -167,6 +165,7 @@ class NhanVien(models.Model):
 
     def __str__(self) -> str:
         return f"{self.ho_ten} - {self.cua_hang.ten}"
+
 
 class KhuyenMai(models.Model):
     ten = models.CharField("Tên khuyến mãi", max_length=150)
