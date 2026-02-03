@@ -8,3 +8,4 @@ def store_list_page(request):
 
 def map_page(request):
     return render(request, "gis_store/map.html")
+

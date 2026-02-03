@@ -42,7 +42,7 @@ INSTALLED_APPS = [
     'gis_store',
 
     # Chỉ giữ nếu còn dùng
-    # 'tools',
+    'tools',
 ]
 
 

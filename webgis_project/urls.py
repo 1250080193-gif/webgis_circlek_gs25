@@ -28,7 +28,7 @@ urlpatterns = [
     path('', include('gis_store.urls')),
 
     # Chỉ giữ nếu còn dùng tools
-    # path('tools/', include('tools.urls')),
+    path('tools/', include('tools.urls')),
 ]
 
 

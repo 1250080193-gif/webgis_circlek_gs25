@@ -542,22 +542,97 @@
 
   // ===== smart search (để có center) =====
   async function callSmart(){
+
     const q = (qInput.value || "").trim();
-    if(!q){ setStatus("Nhập địa chỉ hoặc lat,lon.", false); return; }
+    if(!q){
+      setStatus("Nhập địa chỉ hoặc click bản đồ.", false);
+      return;
+    }
 
     const maxKm = maxKmSel.value;
-    // mặc định center theo CircleK (tab system), bạn có thể đổi theo tab
-    const brand = document.querySelector('.tab.active')?.dataset?.tab === "gs25" ? "GS25" : "CIRCLEK";
 
-    const {res, data} = await fetchJSON(`/tools/smart-search/?q=${encodeURIComponent(q)}&brand=${encodeURIComponent(brand)}&max_km=${encodeURIComponent(maxKm)}`);
+    const brand =
+      document.querySelector('.tab.active')?.dataset?.tab === "gs25"
+        ? "GS25"
+        : "CIRCLEK";
+
+
+    // Ưu tiên tọa độ hiện tại trên map
+    let lat = null;
+    let lng = null;
+
+    if(currentCenter){
+      lat = currentCenter.lat;
+      lng = currentCenter.lon;
+    }
+
+
+    const payload = {
+      ten: brand,
+      dia_chi: q,
+      lat: lat,
+      lng: lng,
+      max_km: maxKm
+    };
+
+
+    const {res, data} = await postJSON(
+      "/tools/smart-search/",
+      payload
+    );
+
     if(!res || !res.ok || !data.location) return;
 
-    setUser(Number(data.location.lat), Number(data.location.lon), data.location.display_address || q);
-    // nếu có store nearest -> focus luôn
+
+    setUser(
+      Number(data.location.lat),
+      Number(data.location.lon),
+      data.location.display_address || q
+    );
+
+
     if(data.store){
+
       storeMarkers.forEach(m => m.remove());
       storeMarkers = [];
-      focusStore({lat:Number(data.store.lat), lon:Number(data.store.lon), name:data.store.name, address_db:data.store.address_db || ""});
+
+      focusStore({
+        lat: Number(data.store.lat),
+        lon: Number(data.store.lon),
+        name: data.store.name,
+        address_db: data.store.address_db || ""
+      });
+    }
+  }
+
+  async function postJSON(url, body){
+    setStatus("Đang gọi API...");
+
+    try{
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+
+      const data = await res.json();
+
+      showJSON(data);
+
+      if(!res.ok){
+        setStatus(data.error || "Có lỗi", false);
+      }else{
+        setStatus(data.message || "OK ✅", true);
+      }
+
+      return {res, data};
+
+    }catch(e){
+      showJSON({error:String(e)});
+      setStatus("Lỗi mạng ❌", false);
+      return {res:null, data:null};
     }
   }
 

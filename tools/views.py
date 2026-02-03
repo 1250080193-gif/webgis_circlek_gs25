@@ -8,28 +8,23 @@ from django.http import JsonResponse
 from django.db.models import Q
 from django.core.cache import cache
 
-from gis_store.models import Store
+from gis_store.models import CuaHang
 
 
 # ============================================================
 # CONFIG
 # ============================================================
 ALIASES = {
-    "CIRCLEK": ["CIRCLEK", "CIRCLE K", "CIRCLE_K", "CIRCLE-K"],
-    "GS25": ["GS25", "GS 25"],
+    "CIRCLEK": ["CIRCLEK", "CIRCLE K", "CIRCLE_K", "CIRCLE-K", "Circle K"],
+    "GS25": ["GS25", "GS 25", "Gs25"],
 }
 
-# Fallback center: TP.HCM
-DEFAULT_CENTER = (10.7769, 106.7009)
-
+DEFAULT_CENTER = (10.7769, 106.7009)  # TP.HCM
 VN_COUNTRY_CODE = "vn"
 CACHE_TTL = 60 * 60 * 24  # 24h
 NONE_SENTINEL = "__NONE__"
 
-# Nominatim policy friendly (đổi email thật của bạn)
 CONTACT_EMAIL = "student@example.com"
-
-# Retry nhẹ nếu mạng chập chờn / rate limit
 NOMINATIM_RETRIES = 2
 NOMINATIM_TIMEOUT = 12
 
@@ -38,7 +33,6 @@ NOMINATIM_TIMEOUT = 12
 # BASIC HELPERS
 # ============================================================
 def _headers():
-    # Nominatim khuyến nghị User-Agent có contact
     return {
         "User-Agent": f"webgis_project/1.0 (student project; contact: {CONTACT_EMAIL})",
         "Accept-Language": "vi,en;q=0.8",
@@ -75,18 +69,11 @@ def _normalize_brand(raw: str) -> str:
 def _brand_q(brand_key: str):
     q = Q()
     for b in ALIASES.get(brand_key, []):
-        q |= Q(brand__iexact=b)
+        q |= Q(chuoi__ten__iexact=b)
     return q
 
 
 def _parse_latlon(text: str):
-    """
-    Accept:
-      "10.7,106.6"
-      "10.7 106.6"
-      "10.7;106.6"
-      "Lat: 10.7 Lon: 106.6"
-    """
     if not text:
         return None
     t = text.strip()
@@ -125,19 +112,20 @@ def _bbox_filter(qs, lat, lon, radius_km):
     dlat = radius_km / 111.0
     dlon = radius_km / (111.0 * max(math.cos(math.radians(lat)), 1e-6))
     return qs.filter(
-        latitude__gte=lat - dlat, latitude__lte=lat + dlat,
-        longitude__gte=lon - dlon, longitude__lte=lon + dlon
+        vi_do__gte=lat - dlat, vi_do__lte=lat + dlat,
+        kinh_do__gte=lon - dlon, kinh_do__lte=lon + dlon
     )
 
 
-def _store_dict(s: Store, extra=None):
+def _store_dict(s: CuaHang, extra=None):
     d = {
         "id": s.id,
-        "name": s.name,
-        "brand": s.brand,
-        "address_db": getattr(s, "address", "") or "",
-        "lat": float(s.latitude),
-        "lon": float(s.longitude),
+        "name": s.ten,                 # giữ key cũ "name" cho frontend/map
+        "brand": s.chuoi.ten,
+        "address_db": s.dia_chi,
+        "district": s.quan_huyen,
+        "lat": float(s.vi_do),
+        "lon": float(s.kinh_do),
     }
     if extra:
         d.update(extra)
@@ -153,55 +141,40 @@ def _suggest_next_km(km: float):
 
 
 # ============================================================
-# NORMALIZE USER INPUT (chịu nhiều kiểu nhập)
+# NORMALIZE INPUT
 # ============================================================
 def _normalize_raw_query(raw: str) -> str:
     if not raw:
         return ""
-
-    # join multi-lines
     parts = [x.strip() for x in raw.splitlines() if x.strip()]
     q = ", ".join(parts) if parts else raw.strip()
     q = re.sub(r"\s+", " ", q).strip()
 
-    # remove leading brand words
     q = re.sub(r"(?i)^\s*(circle\s*k|circlek|gs25)\s+", "", q).strip()
     q = re.sub(r"(?i)\b(tìm|search|near|gần)\b", "", q).strip()
 
-    # unify abbreviations
     q = re.sub(r"(?i)\bTP\.\b", "TP", q)
     q = re.sub(r"(?i)\bQ\.\b", "Q", q)
     q = re.sub(r"(?i)\bP\.\b", "P", q)
 
-    # English style: F13 / D4
     q = re.sub(r"(?i)\bF\s*(\d+)\b", r"Phường \1", q)
     q = re.sub(r"(?i)\bD\s*(\d+)\b", r"Quận \1", q)
 
-    # VN short: Q4 / P13
     q = re.sub(r"(?i)\bQ\s*(\d+)\b", r"Quận \1", q)
     q = re.sub(r"(?i)\bP\s*(\d+)\b", r"Phường \1", q)
 
-    # District/Ward words
     q = re.sub(r"(?i)\bDistrict\s*(\d+)\b", r"Quận \1", q)
     q = re.sub(r"(?i)\bWard\s*(\d+)\b", r"Phường \1", q)
 
-    # clean commas
     q = re.sub(r"\s*,\s*", ", ", q)
     q = re.sub(r"(, )+", ", ", q).strip(" ,")
-
     return q
 
 
 def _ensure_hcm_vn(q: str) -> str:
-    """
-    Nếu có Quận/Phường mà thiếu TP.HCM thì thêm TP.HCM.
-    Nếu thiếu Việt Nam thì thêm Việt Nam.
-    Xử lý "..., TP" ở cuối.
-    """
     if not q:
         return ""
 
-    # "TP" at end => assume HCM (vì project của bạn đang ở HCM)
     q = re.sub(r"(?i)\bTP\b\.?$", "Thành phố Hồ Chí Minh", q).strip()
 
     low = q.lower()
@@ -209,7 +182,6 @@ def _ensure_hcm_vn(q: str) -> str:
     has_hcm = ("hồ chí minh" in low) or ("ho chi minh" in low) or ("hcm" in low) or ("hcmc" in low)
     has_district = bool(re.search(r"(?i)\bquận\s*\d+\b", q))
 
-    # map hcm forms -> chuẩn
     q = re.sub(r"(?i)\bTP\s*HCM\b", "Thành phố Hồ Chí Minh", q)
     q = re.sub(r"(?i)\bTPHCM\b", "Thành phố Hồ Chí Minh", q)
     q = re.sub(r"(?i)\bHCMC\b", "Thành phố Hồ Chí Minh", q)
@@ -221,10 +193,8 @@ def _ensure_hcm_vn(q: str) -> str:
 
     if has_district and not has_hcm2:
         q = f"{q}, Thành phố Hồ Chí Minh"
-
     if not has_vn:
         q = f"{q}, Việt Nam"
-
     return q.strip()
 
 
@@ -232,18 +202,14 @@ def _make_geocode_variants(raw_q: str):
     base = _normalize_raw_query(raw_q)
     if not base:
         return []
-
     v1 = _ensure_hcm_vn(base)
     v2 = _strip_accents(v1)
 
     variants = [v1, v2]
-
-    # English city variant
     if "Thành phố Hồ Chí Minh" in v1:
         variants.append(v1.replace("Thành phố Hồ Chí Minh", "Ho Chi Minh City"))
         variants.append(v2.replace("Thanh pho Ho Chi Minh", "Ho Chi Minh City"))
 
-    # remove duplicates
     seen = set()
     out = []
     for v in variants:
@@ -255,27 +221,19 @@ def _make_geocode_variants(raw_q: str):
 
 
 # ============================================================
-# NOMINATIM (an toàn, có retry, không cache NONE khi lỗi)
+# NOMINATIM
 # ============================================================
 def _call_nominatim_search_safe(query: str, use_countrycodes=True):
     url = "https://nominatim.openstreetmap.org/search"
-    params = {
-        "q": query,
-        "format": "jsonv2",
-        "limit": 1,
-        "addressdetails": 1,
-    }
+    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
     if use_countrycodes:
         params["countrycodes"] = VN_COUNTRY_CODE
 
     try:
         r = requests.get(url, params=params, headers=_headers(), timeout=NOMINATIM_TIMEOUT)
         status = r.status_code
-
-        # nếu bị chặn / rate limit -> trả err để caller biết (đừng cache NONE)
         if status != 200:
             return None, {"status": status, "body": r.text[:200], "query": query}
-
         arr = r.json()
         return (arr[0] if arr else None), None
     except Exception as e:
@@ -298,7 +256,7 @@ def _forward_geocode(raw_q: str):
     had_http_error = False
 
     for v in variants:
-        for attempt in range(NOMINATIM_RETRIES + 1):
+        for _ in range(NOMINATIM_RETRIES + 1):
             res, err = _call_nominatim_search_safe(v, use_countrycodes=True)
             if res:
                 _cache_set(cache_key, res)
@@ -307,7 +265,6 @@ def _forward_geocode(raw_q: str):
                 last_err = err
                 had_http_error = True
 
-            # fallback without countrycodes
             res, err = _call_nominatim_search_safe(v, use_countrycodes=False)
             if res:
                 _cache_set(cache_key, res)
@@ -316,11 +273,9 @@ def _forward_geocode(raw_q: str):
                 last_err = err
                 had_http_error = True
 
-            # backoff nhẹ nếu bị 429
             if isinstance(last_err, dict) and last_err.get("status") == 429:
                 time.sleep(0.4)
 
-    # Chỉ cache NONE nếu không có lỗi HTTP/exception (tức là 200 nhưng rỗng thật)
     if not had_http_error:
         _cache_set(cache_key, NONE_SENTINEL)
 
@@ -377,11 +332,11 @@ def debug_geocode(request):
 
 
 # ============================================================
-# TOOL 1: FILTER BY BRAND
+# TOOL 1: FILTER BY BRAND (chuỗi)
 # ============================================================
 def stores_by_brand(request):
     brand = _normalize_brand(request.GET.get("brand", ""))
-    qs = Store.objects.all()
+    qs = CuaHang.objects.select_related("chuoi").all()
     if brand:
         qs = qs.filter(_brand_q(brand))
 
@@ -390,7 +345,7 @@ def stores_by_brand(request):
 
 
 # ============================================================
-# TOOL 2: STORES IN RADIUS
+# TOOL 2: STORES IN RADIUS (UPDATED: filter brand)
 # ============================================================
 def stores_in_radius(request):
     try:
@@ -398,16 +353,20 @@ def stores_in_radius(request):
         lon = float(request.GET.get("lon"))
         radius_km = float(request.GET.get("radius_km", 1))
     except (TypeError, ValueError):
-        return JsonResponse({"error": "Required: lat, lon. Optional: radius_km"}, status=400)
+        return JsonResponse({"error": "Required: lat, lon. Optional: radius_km, brand"}, status=400)
 
+    brand = _normalize_brand(request.GET.get("brand", ""))  # ✅ thêm
     if radius_km <= 0:
         return JsonResponse({"error": "radius_km must be > 0"}, status=400)
 
-    qs = _bbox_filter(Store.objects.all(), lat, lon, radius_km)
+    qs0 = CuaHang.objects.select_related("chuoi").all()
+    if brand:
+        qs0 = qs0.filter(_brand_q(brand))
+    qs = _bbox_filter(qs0, lat, lon, radius_km)
 
     result = []
     for s in qs:
-        d = _haversine_km(lat, lon, float(s.latitude), float(s.longitude))
+        d = _haversine_km(lat, lon, float(s.vi_do), float(s.kinh_do))
         if d <= radius_km:
             result.append(_store_dict(s, {"distance_km": round(d, 3)}))
 
@@ -415,6 +374,7 @@ def stores_in_radius(request):
 
     return JsonResponse({
         "tool": "search_in_radius",
+        "brand": brand or "ALL",
         "center": {"lat": lat, "lon": lon},
         "radius_km": radius_km,
         "count": len(result),
@@ -423,107 +383,181 @@ def stores_in_radius(request):
 
 
 # ============================================================
-# TOOL 3: SMART SEARCH  (LUÔN TRẢ VỀ TỌA ĐỘ ĐỂ MAP HIỆN)
+# TOOL 3: SMART SEARCH (UPDATED: return stores list)
 # ============================================================
+import json
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+@csrf_exempt
 def smart_search(request):
-    raw_q = (request.GET.get("q") or "").strip()
-    if not raw_q:
-        # vẫn trả fallback để map không "chết"
-        lat, lon = DEFAULT_CENTER
-        return JsonResponse({
-            "tool": "smart_search",
-            "ok": False,
-            "message": "Bạn chưa nhập địa chỉ. Đang hiển thị vị trí mặc định (TP.HCM).",
-            "location": {"lat": lat, "lon": lon, "display_address": "TP.HCM (mặc định)"},
-            "store": None,
-            "suggested_max_km": None,
-        })
+    # ✅ BẮT BUỘC đặt ở đầu hàm
+    if request.method != "POST":
+        return JsonResponse(
+            {"error": "POST method required"},
+            status=405
+        )
 
-    brand = _normalize_brand(request.GET.get("brand", "CIRCLEK")) or "CIRCLEK"
+    # ==== LẤY JSON BODY ====
     try:
-        max_km = float(request.GET.get("max_km", 0.2))
-    except ValueError:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        data = {}
+
+    ten = data.get("ten", "").strip()
+    dia_chi = data.get("dia_chi", "").strip()
+    quan = data.get("quan", "").strip()
+    lat = data.get("lat")
+    lng = data.get("lng")
+
+    # ==== BRAND ====
+    brand = _normalize_brand(ten) or "CIRCLEK"
+
+    # ==== MAX KM ====
+    try:
+        max_km = float(data.get("max_km", 0.2))
+    except (TypeError, ValueError):
         max_km = 0.2
+
     if max_km <= 0:
         max_km = 0.2
 
-    # 1) lat/lon mode
-    latlon = _parse_latlon(raw_q)
-    mode = "latlon" if latlon else "address"
 
+    # ==== XÁC ĐỊNH VỊ TRÍ ====
+
+    mode = "latlon"
+    hit = None
     geocode_err = None
     variants = []
-    hit = None
 
-    if latlon:
-        lat, lon = latlon
-    else:
-        hit, geocode_err, variants = _forward_geocode(raw_q)
+    # Nếu có lat/lng → dùng luôn
+    use_client = False
+
+    if lat not in (None, "") and lng not in (None, ""):
+        try:
+            lat = float(lat)
+            lng = float(lng)
+            use_client = True
+        except:
+            lat = None
+            lng = None
+
+
+    # Không có lat/lng → geocode bằng địa chỉ
+    if not use_client and dia_chi:
+
+        hit, geocode_err, variants = _forward_geocode(dia_chi)
+
         if hit:
-            lat, lon = float(hit["lat"]), float(hit["lon"])
+            lat = float(hit["lat"])
+            lng = float(hit["lon"])
+            mode = "address"
         else:
-            # FAIL nhưng vẫn trả fallback để map chắc chắn hiện
-            lat, lon = DEFAULT_CENTER
+            lat, lng = DEFAULT_CENTER
+            mode = "address"
 
-    # 2) reverse (nếu có)
+    # Không có gì cả → default
+    else:
+        lat, lng = DEFAULT_CENTER
+        mode = "default"
+
+
+    # ==== REVERSE GEOCODE ====
+
     road = suburb = city = display_address = ""
-    geo = _reverse_geocode(lat, lon)
+
+    geo = _reverse_geocode(lat, lng)
+
     if geo:
         road, suburb, city, display_address = _extract_road_display(geo)
     else:
-        display_address = "TP.HCM (mặc định)" if (lat, lon) == DEFAULT_CENTER else ""
+        display_address = dia_chi or "TP.HCM (mặc định)"
 
-    # 3) tìm cửa hàng gần nhất trong max_km (nếu có tọa độ)
-    candidates = _bbox_filter(Store.objects.filter(_brand_q(brand)), lat, lon, max_km)
 
-    best = None
-    best_d = 10**9
+    # ==== LỌC CỬA HÀNG ====
+
+    candidates = _bbox_filter(
+        CuaHang.objects
+        .select_related("chuoi")
+        .filter(_brand_q(brand)),
+        lat,
+        lng,
+        max_km
+    )
+
+    stores_list = []
+
     for s in candidates:
-        d = _haversine_km(lat, lon, float(s.latitude), float(s.longitude))
-        if d < best_d:
-            best_d, best = d, s
 
-    store_data = None
-    suggested = None
+        d = _haversine_km(
+            lat,
+            lng,
+            float(s.vi_do),
+            float(s.kinh_do)
+        )
 
-    if best and best_d <= max_km:
-        store_data = _store_dict(best, {"distance_km": round(best_d, 4)})
-        store_msg = f"Tìm thấy {brand} gần nhất trong {max_km} km."
+        if d <= max_km:
+
+            stores_list.append(
+                _store_dict(
+                    s,
+                    {"distance_km": round(d, 3)}
+                )
+            )
+
+
+    stores_list.sort(key=lambda x: x["distance_km"])
+
+    store_data = stores_list[0] if stores_list else None
+
+
+    # ==== MESSAGE ====
+
+    if stores_list:
+        msg = f"Tìm thấy {len(stores_list)} {brand} trong {max_km} km."
+        ok = True
+        suggested = None
     else:
-        store_msg = f"Không có {brand} trong {max_km} km."
+        msg = f"Không có {brand} trong {max_km} km."
+        ok = False
         suggested = _suggest_next_km(max_km)
 
-    # 4) message tổng hợp
-    if mode == "address" and not hit:
-        msg = (
-            "Không định vị được địa chỉ bạn nhập (có thể do viết tắt/lỗi hoặc bị chặn Nominatim). "
-            "Hệ thống đang hiển thị vị trí mặc định (TP.HCM). "
-            + store_msg
-        )
-        ok = False
-    else:
-        msg = "Đã định vị. " + store_msg
-        ok = True
+
+    # ==== RESPONSE ====
 
     return JsonResponse({
+
         "tool": "smart_search",
         "ok": ok,
         "mode": mode,
-        "input": {"q": raw_q, "brand": brand, "max_km": max_km},
+
+        "input": {
+            "ten": ten,
+            "dia_chi": dia_chi,
+            "quan": quan,
+            "lat": lat,
+            "lng": lng,
+            "brand": brand,
+            "max_km": max_km
+        },
+
         "geocode": {
             "hit": hit,
             "variants_tried": variants[:8],
             "error": geocode_err,
         } if mode == "address" else None,
+
         "location": {
             "lat": lat,
-            "lon": lon,
+            "lon": lng,
             "road": road,
             "suburb": suburb,
             "city": city,
             "display_address": display_address,
         },
+
         "store": store_data,
+        "count": len(stores_list),
+        "stores": stores_list[:200],
         "message": msg,
         "suggested_max_km": suggested,
     })
