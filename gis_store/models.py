@@ -83,7 +83,7 @@ class ChuoiCuaHang(models.Model):
 
     logo = models.ImageField(
         "Logo chuỗi",
-        upload_to="media/logo/",
+        upload_to="logo/",
         null=True,
         blank=True,
     )
