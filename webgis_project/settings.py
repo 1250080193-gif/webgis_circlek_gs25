@@ -31,6 +31,12 @@ ALLOWED_HOSTS = [
 # APPLICATIONS
 # =========================
 INSTALLED_APPS = [
+    # Apps
+    'gis_store',
+
+    # Chỉ giữ nếu còn dùng
+    'tools',
+    
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -38,11 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
-    # Apps
-    'gis_store',
 
-    # Chỉ giữ nếu còn dùng
-    'tools',
 ]
 
 
