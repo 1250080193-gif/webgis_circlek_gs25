@@ -1,51 +1,122 @@
 import math
 import re
 import time
+import json
 import unicodedata
+import hashlib
 import requests
+from functools import wraps
 
 from django.http import JsonResponse
 from django.db.models import Q
 from django.core.cache import cache
+from django.views.decorators.csrf import csrf_exempt
 
 from gis_store.models import CuaHang
 
 
-# ============================================================
+# =========================
 # CONFIG
-# ============================================================
+# =========================
 ALIASES = {
     "CIRCLEK": ["CIRCLEK", "CIRCLE K", "CIRCLE_K", "CIRCLE-K", "Circle K"],
-    "GS25": ["GS25", "GS 25", "Gs25"],
+    "GS25": ["GS25", "GS 25", "Gs25", "GS-25"],
 }
 
 DEFAULT_CENTER = (10.7769, 106.7009)  # TP.HCM
 VN_COUNTRY_CODE = "vn"
-CACHE_TTL = 60 * 60 * 24  # 24h
-NONE_SENTINEL = "__NONE__"
+
+CACHE_TTL = 60 * 60 * 6
+CACHE_TTL_SHORT = 60 * 10
 
 CONTACT_EMAIL = "student@example.com"
-NOMINATIM_RETRIES = 2
 NOMINATIM_TIMEOUT = 12
+OSRM_TIMEOUT = 12
+
+_LAST_NOMINATIM_TS_KEY = "nominatim:last_ts"
+_NOMINATIM_MIN_INTERVAL_SEC = 0.35
+
+MAX_STORES_RETURN = 2000
 
 
-# ============================================================
-# BASIC HELPERS
-# ============================================================
+# =========================
+# CORS
+# =========================
+def _add_cors_headers(resp, request):
+    origin = request.META.get("HTTP_ORIGIN")
+    resp["Access-Control-Allow-Origin"] = origin if origin else "*"
+    resp["Vary"] = "Origin"
+    resp["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp["Access-Control-Max-Age"] = "86400"
+    return resp
+
+
+def _options_ok(request):
+    resp = JsonResponse({"ok": True, "message": "OPTIONS OK"})
+    return _add_cors_headers(resp, request)
+
+
+def cors_view(fn):
+    @wraps(fn)
+    def _wrapped(request, *args, **kwargs):
+        if request.method == "OPTIONS":
+            return _options_ok(request)
+        resp = fn(request, *args, **kwargs)
+        return _add_cors_headers(resp, request)
+
+    return _wrapped
+
+
+# =========================
+# RESPONSE HELPERS
+# =========================
+def ok(data=None, message="OK"):
+    payload = {"ok": True, "message": message}
+    if data:
+        payload.update(data)
+    return JsonResponse(payload)
+
+
+def bad(message="Bad request", status=400, **extra):
+    payload = {"ok": False, "error": message}
+    payload.update(extra)
+    return JsonResponse(payload, status=status)
+
+
+def _safe_int(v, default=0, min_v=None, max_v=None):
+    try:
+        x = int(v)
+    except Exception:
+        x = default
+    if min_v is not None:
+        x = max(min_v, x)
+    if max_v is not None:
+        x = min(max_v, x)
+    return x
+
+
+def _safe_float(v, default=None):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _cache_key(prefix: str, obj: dict):
+    s = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    h = hashlib.md5(s.encode("utf-8")).hexdigest()
+    return f"{prefix}:{h}"
+
+
+# =========================
+# HELPERS
+# =========================
 def _headers():
     return {
         "User-Agent": f"webgis_project/1.0 (student project; contact: {CONTACT_EMAIL})",
         "Accept-Language": "vi,en;q=0.8",
-        "Referer": "http://127.0.0.1:8000/",
     }
-
-
-def _cache_get(key):
-    return cache.get(key)
-
-
-def _cache_set(key, value, seconds=CACHE_TTL):
-    cache.set(key, value, seconds)
 
 
 def _strip_accents(s: str) -> str:
@@ -57,16 +128,26 @@ def _strip_accents(s: str) -> str:
 
 
 def _normalize_brand(raw: str) -> str:
-    b = (raw or "").strip().upper()
-    if b in ALIASES:
-        return b
+    if not raw:
+        return ""
+    up = (raw or "").strip().upper()
+    if up in ALIASES:
+        return up
+    # contains alias anywhere (fix: "GS25 Nguyễn Trãi" vẫn nhận ra GS25)
     for key, arr in ALIASES.items():
-        if b in [x.upper() for x in arr]:
-            return key
+        for a in arr:
+            if a.upper() in up:
+                return key
     return ""
 
 
 def _brand_q(brand_key: str):
+    """
+    DB của bạn: CuaHang.chuoi (FK) -> ChuoiCuaHang.ten
+    Bạn đã chuẩn hóa: 'CIRCLEK', 'GS25'
+    """
+    if not brand_key:
+        return Q()
     q = Q()
     for b in ALIASES.get(brand_key, []):
         q |= Q(chuoi__ten__iexact=b)
@@ -77,18 +158,6 @@ def _parse_latlon(text: str):
     if not text:
         return None
     t = text.strip()
-
-    m = re.search(
-        r"(?i)\blat(?:itude)?\b\D*(-?\d+(?:\.\d+)?)\D+"
-        r"\blon(?:gitude)?\b\D*(-?\d+(?:\.\d+)?)",
-        t
-    )
-    if m:
-        lat = float(m.group(1))
-        lon = float(m.group(2))
-        if -90 <= lat <= 90 and -180 <= lon <= 180:
-            return lat, lon
-
     m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)\s*$", t)
     if not m:
         return None
@@ -120,10 +189,10 @@ def _bbox_filter(qs, lat, lon, radius_km):
 def _store_dict(s: CuaHang, extra=None):
     d = {
         "id": s.id,
-        "name": s.ten,                 # giữ key cũ "name" cho frontend/map
-        "brand": s.chuoi.ten,
+        "name": s.ten,
+        "brand": s.chuoi.ten if getattr(s, "chuoi", None) else "",
         "address_db": s.dia_chi,
-        "district": s.quan_huyen,
+        "district": getattr(s, "quan_huyen", "") or "",
         "lat": float(s.vi_do),
         "lon": float(s.kinh_do),
     }
@@ -132,40 +201,15 @@ def _store_dict(s: CuaHang, extra=None):
     return d
 
 
-def _suggest_next_km(km: float):
-    steps = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
-    for s in steps:
-        if km < s:
-            return s
-    return None
-
-
-# ============================================================
-# NORMALIZE INPUT
-# ============================================================
 def _normalize_raw_query(raw: str) -> str:
     if not raw:
         return ""
     parts = [x.strip() for x in raw.splitlines() if x.strip()]
     q = ", ".join(parts) if parts else raw.strip()
     q = re.sub(r"\s+", " ", q).strip()
-
     q = re.sub(r"(?i)^\s*(circle\s*k|circlek|gs25)\s+", "", q).strip()
-    q = re.sub(r"(?i)\b(tìm|search|near|gần)\b", "", q).strip()
-
-    q = re.sub(r"(?i)\bTP\.\b", "TP", q)
-    q = re.sub(r"(?i)\bQ\.\b", "Q", q)
-    q = re.sub(r"(?i)\bP\.\b", "P", q)
-
-    q = re.sub(r"(?i)\bF\s*(\d+)\b", r"Phường \1", q)
-    q = re.sub(r"(?i)\bD\s*(\d+)\b", r"Quận \1", q)
-
     q = re.sub(r"(?i)\bQ\s*(\d+)\b", r"Quận \1", q)
     q = re.sub(r"(?i)\bP\s*(\d+)\b", r"Phường \1", q)
-
-    q = re.sub(r"(?i)\bDistrict\s*(\d+)\b", r"Quận \1", q)
-    q = re.sub(r"(?i)\bWard\s*(\d+)\b", r"Phường \1", q)
-
     q = re.sub(r"\s*,\s*", ", ", q)
     q = re.sub(r"(, )+", ", ", q).strip(" ,")
     return q
@@ -174,24 +218,16 @@ def _normalize_raw_query(raw: str) -> str:
 def _ensure_hcm_vn(q: str) -> str:
     if not q:
         return ""
-
-    q = re.sub(r"(?i)\bTP\b\.?$", "Thành phố Hồ Chí Minh", q).strip()
-
     low = q.lower()
     has_vn = ("việt nam" in low) or ("vietnam" in low)
-    has_hcm = ("hồ chí minh" in low) or ("ho chi minh" in low) or ("hcm" in low) or ("hcmc" in low)
+    has_hcm = ("hồ chí minh" in low) or ("ho chi minh" in low) or ("tp hcm" in low) or ("hcm" in low)
     has_district = bool(re.search(r"(?i)\bquận\s*\d+\b", q))
 
     q = re.sub(r"(?i)\bTP\s*HCM\b", "Thành phố Hồ Chí Minh", q)
-    q = re.sub(r"(?i)\bTPHCM\b", "Thành phố Hồ Chí Minh", q)
-    q = re.sub(r"(?i)\bHCMC\b", "Thành phố Hồ Chí Minh", q)
     q = re.sub(r"(?i)\bHCM\b", "Thành phố Hồ Chí Minh", q)
     q = re.sub(r"(?i)\bSài Gòn\b|\bSai Gon\b", "Thành phố Hồ Chí Minh", q)
 
-    low2 = q.lower()
-    has_hcm2 = ("hồ chí minh" in low2) or ("ho chi minh" in low2)
-
-    if has_district and not has_hcm2:
+    if has_district and not has_hcm:
         q = f"{q}, Thành phố Hồ Chí Minh"
     if not has_vn:
         q = f"{q}, Việt Nam"
@@ -204,15 +240,12 @@ def _make_geocode_variants(raw_q: str):
         return []
     v1 = _ensure_hcm_vn(base)
     v2 = _strip_accents(v1)
+    v3 = base
+    if not re.search(r"(?i)\bviệt nam\b|\bvietnam\b", v3):
+        v3 = f"{v3}, Việt Nam"
 
-    variants = [v1, v2]
-    if "Thành phố Hồ Chí Minh" in v1:
-        variants.append(v1.replace("Thành phố Hồ Chí Minh", "Ho Chi Minh City"))
-        variants.append(v2.replace("Thanh pho Ho Chi Minh", "Ho Chi Minh City"))
-
-    seen = set()
-    out = []
-    for v in variants:
+    out, seen = [], set()
+    for v in [v1, v2, v3]:
         vv = re.sub(r"\s+", " ", v).strip()
         if vv and vv not in seen:
             seen.add(vv)
@@ -220,149 +253,257 @@ def _make_geocode_variants(raw_q: str):
     return out
 
 
-# ============================================================
-# NOMINATIM
-# ============================================================
+def _cache_get(key):
+    return cache.get(key)
+
+
+def _cache_set(key, value, seconds=CACHE_TTL):
+    cache.set(key, value, seconds)
+
+
+def _nominatim_throttle():
+    last = _cache_get(_LAST_NOMINATIM_TS_KEY)
+    now = time.time()
+    if last:
+        try:
+            last = float(last)
+            if (now - last) < _NOMINATIM_MIN_INTERVAL_SEC:
+                time.sleep(_NOMINATIM_MIN_INTERVAL_SEC - (now - last))
+        except Exception:
+            pass
+    _cache_set(_LAST_NOMINATIM_TS_KEY, str(time.time()), seconds=60)
+
+
 def _call_nominatim_search_safe(query: str, use_countrycodes=True):
+    _nominatim_throttle()
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
+    params = {"q": query, "format": "jsonv2", "limit": 8, "addressdetails": 1}
     if use_countrycodes:
         params["countrycodes"] = VN_COUNTRY_CODE
-
     try:
         r = requests.get(url, params=params, headers=_headers(), timeout=NOMINATIM_TIMEOUT)
-        status = r.status_code
-        if status != 200:
-            return None, {"status": status, "body": r.text[:200], "query": query}
-        arr = r.json()
-        return (arr[0] if arr else None), None
+        if r.status_code != 200:
+            return None, {"status": r.status_code, "body": r.text[:200], "query": query}
+        return (r.json() or []), None
     except Exception as e:
         return None, {"exception": str(e), "query": query}
 
 
-def _forward_geocode(raw_q: str):
-    variants = _make_geocode_variants(raw_q)
-    if not variants:
-        return None, None, variants
-
-    cache_key = f"geo_fwd:{variants[0].lower()}"
-    cached = _cache_get(cache_key)
-    if cached == NONE_SENTINEL:
-        return None, None, variants
-    if isinstance(cached, dict):
-        return cached, None, variants
-
-    last_err = None
-    had_http_error = False
-
-    for v in variants:
-        for _ in range(NOMINATIM_RETRIES + 1):
-            res, err = _call_nominatim_search_safe(v, use_countrycodes=True)
-            if res:
-                _cache_set(cache_key, res)
-                return res, None, variants
-            if err:
-                last_err = err
-                had_http_error = True
-
-            res, err = _call_nominatim_search_safe(v, use_countrycodes=False)
-            if res:
-                _cache_set(cache_key, res)
-                return res, None, variants
-            if err:
-                last_err = err
-                had_http_error = True
-
-            if isinstance(last_err, dict) and last_err.get("status") == 429:
-                time.sleep(0.4)
-
-    if not had_http_error:
-        _cache_set(cache_key, NONE_SENTINEL)
-
-    return None, last_err, variants
-
-
 def _call_nominatim_reverse_safe(lat: float, lon: float):
+    _nominatim_throttle()
     url = "https://nominatim.openstreetmap.org/reverse"
     params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1}
     try:
         r = requests.get(url, params=params, headers=_headers(), timeout=NOMINATIM_TIMEOUT)
         if r.status_code != 200:
-            return None
-        return r.json()
-    except Exception:
-        return None
+            return None, {"status": r.status_code, "body": r.text[:200]}
+        return r.json(), None
+    except Exception as e:
+        return None, {"exception": str(e)}
 
 
 def _reverse_geocode(lat: float, lon: float):
-    cache_key = f"geo_rev:{round(lat,6)}:{round(lon,6)}"
-    cached = _cache_get(cache_key)
+    key = _cache_key("geo_rev", {"lat": round(lat, 6), "lon": round(lon, 6)})
+    cached = _cache_get(key)
     if isinstance(cached, dict):
-        return cached
-    res = _call_nominatim_reverse_safe(lat, lon)
+        return cached, None
+    res, err = _call_nominatim_reverse_safe(lat, lon)
     if res:
-        _cache_set(cache_key, res)
-        return res
-    return None
+        _cache_set(key, res, seconds=60 * 60)
+        return res, None
+    return None, err
 
 
-def _extract_road_display(geo_json: dict):
-    display = (geo_json or {}).get("display_name", "") or ""
-    addr = (geo_json or {}).get("address", {}) or {}
-    road = addr.get("road") or addr.get("pedestrian") or addr.get("neighbourhood") or ""
-    suburb = addr.get("suburb") or addr.get("quarter") or ""
-    city = addr.get("city") or addr.get("town") or addr.get("state") or ""
-    return road, suburb, city, display
+# =========================
+# ENDPOINTS
+# =========================
+@cors_view
+def ping(request):
+    return ok({"pong": True}, message="pong")
 
 
-# ============================================================
-# TOOL 0: DEBUG GEOCODE
-# ============================================================
-def debug_geocode(request):
+@cors_view
+def suggest(request):
     q = (request.GET.get("q") or "").strip()
-    if not q:
-        return JsonResponse({"error": "Required: q"}, status=400)
+    if len(q) < 3:
+        return ok({"q": q, "items": [], "variants": []}, message="Type more")
 
-    latlon = _parse_latlon(q)
-    if latlon:
-        return JsonResponse({"mode": "latlon", "input": q, "latlon": {"lat": latlon[0], "lon": latlon[1]}})
+    key = _cache_key("suggest", {"q": q.lower()})
+    cached = _cache_get(key)
+    if isinstance(cached, dict):
+        return ok(cached, message="OK (cache)")
 
-    hit, err, variants = _forward_geocode(q)
-    return JsonResponse({"mode": "address", "input": q, "variants": variants, "hit": hit, "error": err})
+    variants = _make_geocode_variants(q)
+    items = []
+    last_err = None
+
+    for v in variants[:4]:
+        arr, err = _call_nominatim_search_safe(v, use_countrycodes=True)
+        if arr:
+            for x in arr[:8]:
+                items.append({
+                    "display": x.get("display_name", ""),
+                    "lat": x.get("lat"),
+                    "lon": x.get("lon"),
+                    "place_id": x.get("place_id"),
+                })
+            break
+        last_err = err
+
+        arr, err = _call_nominatim_search_safe(v, use_countrycodes=False)
+        if arr:
+            for x in arr[:8]:
+                items.append({
+                    "display": x.get("display_name", ""),
+                    "lat": x.get("lat"),
+                    "lon": x.get("lon"),
+                    "place_id": x.get("place_id"),
+                })
+            break
+        last_err = err
+
+    seen, uniq = set(), []
+    for it in items:
+        k = (it.get("display") or "").strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(it)
+
+    payload = {"q": q, "items": uniq, "variants": variants[:6], "error": last_err}
+    _cache_set(key, payload, seconds=60 * 30)
+    return ok(payload, message="OK")
 
 
-# ============================================================
-# TOOL 1: FILTER BY BRAND (chuỗi)
-# ============================================================
-def stores_by_brand(request):
+@cors_view
+def reverse(request):
+    lat = _safe_float(request.GET.get("lat"))
+    lon = _safe_float(request.GET.get("lon"))
+    if lat is None or lon is None:
+        return bad("Required: lat, lon", status=400)
+
+    res, err = _reverse_geocode(lat, lon)
+    if res:
+        return ok({"lat": lat, "lon": lon, "display": res.get("display_name", ""), "raw": res}, message="OK")
+    return ok({"lat": lat, "lon": lon, "display": "", "error": err}, message="NO_RESULT")
+
+
+@cors_view
+def route_osrm(request):
+    profile = (request.GET.get("profile") or "driving").strip().lower()
+    if profile not in ("driving", "walking", "cycling"):
+        profile = "driving"
+
+    frm = (request.GET.get("from") or "").strip()
+    to = (request.GET.get("to") or "").strip()
+    alternatives = _safe_int(request.GET.get("alternatives", 1), default=1, min_v=0, max_v=3)
+
+    f = _parse_latlon(frm.replace(",", " "))
+    t = _parse_latlon(to.replace(",", " "))
+    if not f or not t:
+        return bad("Required: from=lat,lon and to=lat,lon", status=400)
+
+    flt, fln = f
+    tlt, tln = t
+
+    key = _cache_key("osrm_route", {
+        "profile": profile,
+        "from": [round(flt, 6), round(fln, 6)],
+        "to": [round(tlt, 6), round(tln, 6)],
+        "alternatives": alternatives
+    })
+    cached = _cache_get(key)
+    if isinstance(cached, dict):
+        return ok(cached, message="OK (cache)")
+
+    url = f"https://router.project-osrm.org/route/v1/{profile}/{fln},{flt};{tln},{tlt}"
+    params = {
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "true",
+        "alternatives": "true" if alternatives else "false"
+    }
+
+    try:
+        r = requests.get(url, params=params, headers=_headers(), timeout=OSRM_TIMEOUT)
+        if r.status_code != 200:
+            return bad("OSRM error", status=502, status_code=r.status_code, body=r.text[:250])
+
+        data = r.json()
+        if data.get("code") != "Ok":
+            return bad("OSRM not OK", status=502, raw=data)
+
+        routes = data.get("routes") or []
+        out = {"profile": profile, "from": {"lat": flt, "lon": fln}, "to": {"lat": tlt, "lon": tln}, "routes": routes}
+        _cache_set(key, out, seconds=60 * 30)
+        return ok(out, message="OK")
+    except Exception as e:
+        return bad("OSRM exception", status=502, exception=str(e))
+
+
+@cors_view
+def districts(request):
     brand = _normalize_brand(request.GET.get("brand", ""))
+    key = _cache_key("districts", {"brand": brand or "ALL"})
+    cached = _cache_get(key)
+    if isinstance(cached, list):
+        return ok({"brand": brand or "ALL", "districts": cached}, message="OK (cache)")
+
     qs = CuaHang.objects.select_related("chuoi").all()
     if brand:
         qs = qs.filter(_brand_q(brand))
 
-    stores = [_store_dict(s) for s in qs]
-    return JsonResponse({"tool": "filter_by_brand", "brand": brand or "ALL", "count": len(stores), "stores": stores})
+    items = sorted({
+        (getattr(s, "quan_huyen", "") or "").strip()
+        for s in qs
+        if (getattr(s, "quan_huyen", "") or "").strip()
+    })
+    _cache_set(key, items, seconds=CACHE_TTL)
+    return ok({"brand": brand or "ALL", "districts": items}, message="OK")
 
 
-# ============================================================
-# TOOL 2: STORES IN RADIUS (UPDATED: filter brand)
-# ============================================================
+@cors_view
 def stores_in_radius(request):
-    try:
-        lat = float(request.GET.get("lat"))
-        lon = float(request.GET.get("lon"))
-        radius_km = float(request.GET.get("radius_km", 1))
-    except (TypeError, ValueError):
-        return JsonResponse({"error": "Required: lat, lon. Optional: radius_km, brand"}, status=400)
-
-    brand = _normalize_brand(request.GET.get("brand", ""))  # ✅ thêm
+    lat = _safe_float(request.GET.get("lat"))
+    lon = _safe_float(request.GET.get("lon"))
+    radius_km = _safe_float(request.GET.get("radius_km"), 1.0)
+    if lat is None or lon is None:
+        return bad("Required: lat, lon", status=400)
     if radius_km <= 0:
-        return JsonResponse({"error": "radius_km must be > 0"}, status=400)
+        return bad("radius_km must be > 0", status=400)
 
-    qs0 = CuaHang.objects.select_related("chuoi").all()
+    brand = _normalize_brand(request.GET.get("brand", ""))
+    district = (request.GET.get("district") or "").strip()
+
+    limit = _safe_int(request.GET.get("limit", 300), default=300, min_v=1, max_v=1000)
+    offset = _safe_int(request.GET.get("offset", 0), default=0, min_v=0, max_v=100000)
+
+    key = _cache_key("stores_in_radius", {
+        "lat": round(lat, 6), "lon": round(lon, 6),
+        "radius_km": round(radius_km, 3),
+        "brand": brand or "ALL",
+        "district": district.lower(),
+    })
+    cached = _cache_get(key)
+    if isinstance(cached, list):
+        sliced = cached[offset: offset + limit]
+        return ok({
+            "brand": brand or "ALL",
+            "center": {"lat": lat, "lon": lon},
+            "radius_km": radius_km,
+            "total": len(cached),
+            "count": len(sliced),
+            "offset": offset,
+            "limit": limit,
+            "stores": sliced,
+        }, message="OK (cache)")
+
+    qs = CuaHang.objects.select_related("chuoi").all()
     if brand:
-        qs0 = qs0.filter(_brand_q(brand))
-    qs = _bbox_filter(qs0, lat, lon, radius_km)
+        qs = qs.filter(_brand_q(brand))
+    if district:
+        qs = qs.filter(quan_huyen__iexact=district)
+
+    qs = _bbox_filter(qs, lat, lon, radius_km)
 
     result = []
     for s in qs:
@@ -370,194 +511,148 @@ def stores_in_radius(request):
         if d <= radius_km:
             result.append(_store_dict(s, {"distance_km": round(d, 3)}))
 
-    result.sort(key=lambda x: x["distance_km"])
+    result.sort(key=lambda x: x.get("distance_km", 1e9))
+    if len(result) > MAX_STORES_RETURN:
+        result = result[:MAX_STORES_RETURN]
 
-    return JsonResponse({
-        "tool": "search_in_radius",
+    _cache_set(key, result, seconds=CACHE_TTL_SHORT)
+
+    sliced = result[offset: offset + limit]
+    return ok({
         "brand": brand or "ALL",
         "center": {"lat": lat, "lon": lon},
         "radius_km": radius_km,
-        "count": len(result),
-        "stores": result,
-    })
+        "total": len(result),
+        "count": len(sliced),
+        "offset": offset,
+        "limit": limit,
+        "stores": sliced,
+    }, message="OK")
 
 
-# ============================================================
-# TOOL 3: SMART SEARCH (UPDATED: return stores list)
-# ============================================================
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+@cors_view
+def stores_in_bounds(request):
+    south = _safe_float(request.GET.get("south"))
+    west = _safe_float(request.GET.get("west"))
+    north = _safe_float(request.GET.get("north"))
+    east = _safe_float(request.GET.get("east"))
+    if None in (south, west, north, east):
+        return bad("Required: south, west, north, east", status=400)
+
+    brand = _normalize_brand(request.GET.get("brand", ""))
+    district = (request.GET.get("district") or "").strip()
+    limit = _safe_int(request.GET.get("limit", 500), default=500, min_v=1, max_v=2000)
+
+    qs = CuaHang.objects.select_related("chuoi").all()
+    if brand:
+        qs = qs.filter(_brand_q(brand))
+    if district:
+        qs = qs.filter(quan_huyen__iexact=district)
+
+    qs = qs.filter(
+        vi_do__gte=min(south, north),
+        vi_do__lte=max(south, north),
+        kinh_do__gte=min(west, east),
+        kinh_do__lte=max(west, east),
+    )[:limit]
+
+    stores = [_store_dict(s) for s in qs]
+    return ok({
+        "brand": brand or "ALL",
+        "bounds": {"south": south, "west": west, "north": north, "east": east},
+        "count": len(stores),
+        "stores": stores,
+    }, message="OK")
+
+
+@cors_view
+def search_stores(request):
+    q = (request.GET.get("q") or "").strip()
+    brand = _normalize_brand(request.GET.get("brand", ""))
+    district = (request.GET.get("district") or "").strip()
+    limit = _safe_int(request.GET.get("limit", 200), default=200, min_v=1, max_v=1000)
+
+    qs = CuaHang.objects.select_related("chuoi").all()
+    if brand:
+        qs = qs.filter(_brand_q(brand))
+    if district:
+        qs = qs.filter(quan_huyen__iexact=district)
+
+    if q:
+        qs = qs.filter(Q(ten__icontains=q) | Q(dia_chi__icontains=q))
+
+    qs = qs[:limit]
+    stores = [_store_dict(s) for s in qs]
+    return ok({"q": q, "brand": brand or "ALL", "district": district, "count": len(stores), "stores": stores}, message="OK")
+
+
 @csrf_exempt
+@cors_view
 def smart_search(request):
-    # ✅ BẮT BUỘC đặt ở đầu hàm
     if request.method != "POST":
-        return JsonResponse(
-            {"error": "POST method required"},
-            status=405
-        )
+        return bad("POST method required", status=405)
 
-    # ==== LẤY JSON BODY ====
     try:
         data = json.loads(request.body.decode("utf-8"))
     except Exception:
         data = {}
 
-    ten = data.get("ten", "").strip()
-    dia_chi = data.get("dia_chi", "").strip()
-    quan = data.get("quan", "").strip()
-    lat = data.get("lat")
-    lng = data.get("lng")
+    ten = (data.get("ten") or "").strip()
+    dia_chi = (data.get("dia_chi") or "").strip()
+    lat_in = data.get("lat")
+    lng_in = data.get("lng")
 
-    # ==== BRAND ====
-    brand = _normalize_brand(ten) or "CIRCLEK"
-
-    # ==== MAX KM ====
-    try:
-        max_km = float(data.get("max_km", 0.2))
-    except (TypeError, ValueError):
-        max_km = 0.2
-
+    brand = _normalize_brand(ten) or _normalize_brand(data.get("brand", "")) or "CIRCLEK"
+    max_km = _safe_float(data.get("max_km"), 0.5) or 0.5
     if max_km <= 0:
-        max_km = 0.2
+        max_km = 0.5
 
-
-    # ==== XÁC ĐỊNH VỊ TRÍ ====
-
-    mode = "latlon"
-    hit = None
-    geocode_err = None
-    variants = []
-
-    # Nếu có lat/lng → dùng luôn
-    use_client = False
-
-    if lat not in (None, "") and lng not in (None, ""):
+    client_latlng = None
+    if lat_in not in (None, "") and lng_in not in (None, ""):
         try:
-            lat = float(lat)
-            lng = float(lng)
-            use_client = True
-        except:
-            lat = None
-            lng = None
+            client_latlng = (float(lat_in), float(lng_in))
+        except Exception:
+            client_latlng = None
 
-
-    # Không có lat/lng → geocode bằng địa chỉ
-    if not use_client and dia_chi:
-
-        hit, geocode_err, variants = _forward_geocode(dia_chi)
-
-        if hit:
-            lat = float(hit["lat"])
-            lng = float(hit["lon"])
-            mode = "address"
+    # pick center
+    if dia_chi:
+        latlon = _parse_latlon(dia_chi)
+        if latlon:
+            lat, lng = latlon
+            mode = "latlon_from_text"
         else:
             lat, lng = DEFAULT_CENTER
-            mode = "address"
-
-    # Không có gì cả → default
+            mode = "fallback_default"
     else:
-        lat, lng = DEFAULT_CENTER
-        mode = "default"
-
-
-    # ==== REVERSE GEOCODE ====
-
-    road = suburb = city = display_address = ""
-
-    geo = _reverse_geocode(lat, lng)
-
-    if geo:
-        road, suburb, city, display_address = _extract_road_display(geo)
-    else:
-        display_address = dia_chi or "TP.HCM (mặc định)"
-
-
-    # ==== LỌC CỬA HÀNG ====
+        if client_latlng:
+            lat, lng = client_latlng
+            mode = "client_latlon"
+        else:
+            lat, lng = DEFAULT_CENTER
+            mode = "default"
 
     candidates = _bbox_filter(
-        CuaHang.objects
-        .select_related("chuoi")
-        .filter(_brand_q(brand)),
-        lat,
-        lng,
-        max_km
+        CuaHang.objects.select_related("chuoi").filter(_brand_q(brand)),
+        lat, lng, max_km
     )
 
     stores_list = []
-
     for s in candidates:
-
-        d = _haversine_km(
-            lat,
-            lng,
-            float(s.vi_do),
-            float(s.kinh_do)
-        )
-
+        d = _haversine_km(lat, lng, float(s.vi_do), float(s.kinh_do))
         if d <= max_km:
+            stores_list.append(_store_dict(s, {"distance_km": round(d, 3)}))
 
-            stores_list.append(
-                _store_dict(
-                    s,
-                    {"distance_km": round(d, 3)}
-                )
-            )
-
-
-    stores_list.sort(key=lambda x: x["distance_km"])
-
+    stores_list.sort(key=lambda x: x.get("distance_km", 1e9))
     store_data = stores_list[0] if stores_list else None
 
-
-    # ==== MESSAGE ====
-
-    if stores_list:
-        msg = f"Tìm thấy {len(stores_list)} {brand} trong {max_km} km."
-        ok = True
-        suggested = None
-    else:
-        msg = f"Không có {brand} trong {max_km} km."
-        ok = False
-        suggested = _suggest_next_km(max_km)
-
-
-    # ==== RESPONSE ====
-
     return JsonResponse({
-
+        "ok": bool(stores_list),
         "tool": "smart_search",
-        "ok": ok,
         "mode": mode,
-
-        "input": {
-            "ten": ten,
-            "dia_chi": dia_chi,
-            "quan": quan,
-            "lat": lat,
-            "lng": lng,
-            "brand": brand,
-            "max_km": max_km
-        },
-
-        "geocode": {
-            "hit": hit,
-            "variants_tried": variants[:8],
-            "error": geocode_err,
-        } if mode == "address" else None,
-
-        "location": {
-            "lat": lat,
-            "lon": lng,
-            "road": road,
-            "suburb": suburb,
-            "city": city,
-            "display_address": display_address,
-        },
-
+        "input": {"ten": ten, "dia_chi": dia_chi, "lat": lat, "lng": lng, "brand": brand, "max_km": max_km},
+        "location": {"lat": lat, "lon": lng, "display_address": dia_chi or "TP.HCM"},
         "store": store_data,
         "count": len(stores_list),
-        "stores": stores_list[:200],
-        "message": msg,
-        "suggested_max_km": suggested,
+        "stores": stores_list[:300],
+        "message": f"Tìm thấy {len(stores_list)} cửa hàng trong {max_km} km.",
     })
